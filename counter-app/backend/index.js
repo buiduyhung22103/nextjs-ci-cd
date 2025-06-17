@@ -35,6 +35,10 @@ app.post('/api/increment', async (_, res) => {
   const [rows] = await pool.query(`SELECT value FROM counter WHERE id=1`);
   res.json({ count: rows[0].value });
 });
-
+app.post('/api/decrement', async (_, res) => {
+  await pool.query(`UPDATE counter SET value = value - 1 WHERE id=1`);
+  const [rows] = await pool.query(`SELECT value FROM counter WHERE id=1`);
+  res.json({ count: rows[0].value });
+});
 const port = process.env.PORT || 3001;
 app.listen(port, ()=> console.log("port:",port));
