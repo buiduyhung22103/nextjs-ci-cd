@@ -1,0 +1,102 @@
+---
+# playbook.yml
+
+# 1. Cài Git và Node.js trên cả hai nhóm host
+- name: Ensure Git & Node.js are installed
+  hosts: all
+  become: true
+  tasks:
+    - name: Install Git
+      yum:
+        name: git
+        state: present
+
+    - name: Add NodeSource repo & install Node.js
+      shell: |
+        curl -fsSL https://rpm.nodesource.com/setup_16.x | bash -
+        yum install -y nodejs
+      args:
+        creates: /usr/bin/node
+
+# 2. Triển khai Frontend lên public EC2
+- name: Deploy Frontend on public instance
+  hosts: frontend
+  become: true
+  vars:
+    repo_url: "https://github.com/buiduyhung22103/nextjs-ci-cd.git"
+    repo_dest: "/home/ec2-user/repo"
+    frontend_path: "{{ repo_dest }}/counter-app/frontend"
+  tasks:
+    - name: Clone monorepo for Frontend
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        version: main
+      become_user: ec2-user
+
+    - name: Install Frontend dependencies
+      shell: |
+        cd "{{ frontend_path }}"
+        npm install
+      args:
+        chdir: "{{ frontend_path }}"
+
+    - name: Build Frontend
+      shell: |
+        cd "{{ frontend_path }}"
+        npm run build
+      args:
+        chdir: "{{ frontend_path }}"
+
+    - name: Start Frontend (Next.js)
+      shell: |
+        cd "{{ frontend_path }}"
+        nohup npm run start -p 80 > frontend.log 2>&1 &
+      args:
+        chdir: "{{ frontend_path }}"
+
+# 3. Triển khai Backend lên private EC2
+- name: Deploy Backend on private instance
+  hosts: backend
+  become: true
+  vars:
+    repo_url: "https://github.com/buiduyhung22103/nextjs-ci-cd.git"
+    repo_dest: "/home/ec2-user/repo"
+    backend_path: "{{ repo_dest }}/counter-app/backend"
+    # Bạn hãy thay thế giá trị rds_endpoint trong hosts.ini hoặc group_vars
+    db_host: "{{ hostvars['backend']['rds_endpoint'] | default('REPLACE_WITH_RDS_ENDPOINT') }}"
+    db_name: "counterdb"
+    db_user: "admin"
+    db_pass: "ChangeMe123!"
+  tasks:
+    - name: Clone monorepo for Backend
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        version: main
+      become_user: ec2-user
+
+    - name: Create .env for Backend
+      copy:
+        dest: "{{ backend_path }}/.env"
+        content: |
+          DB_HOST={{ db_host }}
+          DB_NAME={{ db_name }}
+          DB_USER={{ db_user }}
+          DB_PASS={{ db_pass }}
+      owner: ec2-user
+      mode: '0600'
+
+    - name: Install Backend dependencies
+      shell: |
+        cd "{{ backend_path }}"
+        npm install
+      args:
+        chdir: "{{ backend_path }}"
+
+    - name: Start Backend (Node.js)
+      shell: |
+        cd "{{ backend_path }}"
+        nohup npm run start > backend.log 2>&1 &
+      args:
+        chdir: "{{ backend_path }}"
