@@ -1,74 +1,136 @@
 ---
 # playbook.yml
 
-# 1. Cài Git và Node.js trên cả hai nhóm host
-- name: Ensure Git & Node.js are installed
+# 0. Bootstrap: cài Python2 và thiết lập interpreter
+- name: Bootstrap Python2 on all hosts
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install Python2
+      raw: sudo yum install -y python2
+
+    - name: Symlink /usr/bin/python → python2
+      raw: sudo ln -sf /usr/bin/python2 /usr/bin/python
+
+    - name: Reconnect sau khi cài Python2
+      meta: reset_connection
+
+# 1. Cài Git, Node.js v20 & rsync trên tất cả các host
+- name: Ensure Git, Node.js v20 & rsync are installed on all hosts
   hosts: all
   become: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python
   tasks:
-    - name: Install Git
+    - name: Install Git & rsync
       yum:
-        name: git
+        name:
+          - git
+          - rsync
         state: present
 
-    - name: Add NodeSource repo & install Node.js
+    - name: Add NodeSource repo & install Node.js v20
       shell: |
-        curl -fsSL https://rpm.nodesource.com/setup_16.x | bash -
+        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
         yum install -y nodejs
       args:
         creates: /usr/bin/node
 
-# 2. Triển khai Frontend lên public EC2
-- name: Deploy Frontend on public instance
-  hosts: frontend
-  become: true
+# 2. Build Frontend locally on control node
+- name: Build Frontend Locally with WebCrypto shim
+  hosts: localhost
+  connection: local
   vars:
     repo_url: "https://github.com/buiduyhung22103/nextjs-ci-cd.git"
-    repo_dest: "/home/ec2-user/repo"
-    frontend_path: "{{ repo_dest }}/counter-app/frontend"
+    local_path: "/tmp/frontend_build"
+    backend_host: "{{ hostvars['appserver'].ansible_host }}"
   tasks:
-    - name: Clone monorepo for Frontend
+    - name: Remove old local build if exists
+      file:
+        path: "{{ local_path }}"
+        state: absent
+
+    - name: Clone monorepo for local build
       git:
         repo: "{{ repo_url }}"
-        dest: "{{ repo_dest }}"
+        dest: "{{ local_path }}"
         version: main
-      become_user: ec2-user
+        force: yes
 
-    - name: Install Frontend dependencies
-      shell: |
-        cd "{{ frontend_path }}"
-        npm install
+    - name: Create .env for local FE build
+      copy:
+        dest: "{{ local_path }}/counter-app/frontend/.env"
+        content: |
+          VITE_BACKEND_URL=http://{{ backend_host }}:3001
+
+    - name: Create WebCrypto shim for local build
+      copy:
+        dest: "{{ local_path }}/counter-app/frontend/crypto-shim.cjs"
+        content: |
+          // crypto-shim.cjs
+          globalThis.crypto = require('crypto').webcrypto;
+
+    - name: Install Frontend dependencies locally
+      shell: npm install
       args:
-        chdir: "{{ frontend_path }}"
+        chdir: "{{ local_path }}/counter-app/frontend"
 
-    - name: Build Frontend
+    - name: Run local FE build via shim loader
       shell: |
-        cd "{{ frontend_path }}"
-        npm run build
+        node --require ./crypto-shim.cjs --experimental-global-webcrypto node_modules/vite/bin/vite.js build
       args:
-        chdir: "{{ frontend_path }}"
+        chdir: "{{ local_path }}/counter-app/frontend"
 
-    - name: Start Frontend (Next.js)
+# 3. Sync built FE to bastion and serve static
+- name: Deploy Frontend Static on bastion
+  hosts: bastion
+  become: true
+  vars:
+    local_dist: "/tmp/frontend_build/counter-app/frontend/dist/"
+    remote_www: "/home/ec2-user/frontend_dist"
+  tasks:
+    - name: Ensure remote directory exists
+      file:
+        path: "{{ remote_www }}"
+        state: directory
+        owner: ec2-user
+        mode: '0755'
+
+    - name: Sync dist/ to bastion
+      synchronize:
+        src: "{{ local_dist }}"
+        dest: "{{ remote_www }}"
+        delete: yes
+
+    - name: Install serve globally
+      npm:
+        name: serve
+        global: yes
+
+    - name: Start static server on port 80
       shell: |
-        cd "{{ frontend_path }}"
-        nohup npm run start -p 80 > frontend.log 2>&1 &
+        nohup serve -s {{ remote_www }} -l 80 > /dev/null 2>&1 &
       args:
-        chdir: "{{ frontend_path }}"
+        executable: /bin/bash
 
-# 3. Triển khai Backend lên private EC2
-- name: Deploy Backend on private instance
-  hosts: backend
+# 4. Deploy Backend on appserver (via bastion proxy)
+- name: Deploy Backend on appserver
+  hosts: appserver
   become: true
   vars:
     repo_url: "https://github.com/buiduyhung22103/nextjs-ci-cd.git"
     repo_dest: "/home/ec2-user/repo"
     backend_path: "{{ repo_dest }}/counter-app/backend"
-    # Bạn hãy thay thế giá trị rds_endpoint trong hosts.ini hoặc group_vars
-    db_host: "{{ hostvars['backend']['rds_endpoint'] | default('REPLACE_WITH_RDS_ENDPOINT') }}"
-    db_name: "counterdb"
-    db_user: "admin"
-    db_pass: "ChangeMe123!"
+    rds_host: "{{ rds_endpoint }}"
+    db_name: "{{ db_name }}"
+    db_user: "{{ db_user }}"
+    db_pass: "{{ db_pass }}"
   tasks:
+    - name: Remove old backend repo if exists
+      file:
+        path: "{{ repo_dest }}"
+        state: absent
+
     - name: Clone monorepo for Backend
       git:
         repo: "{{ repo_url }}"
@@ -80,23 +142,21 @@
       copy:
         dest: "{{ backend_path }}/.env"
         content: |
-          DB_HOST={{ db_host }}
+          DB_HOST={{ rds_host }}
           DB_NAME={{ db_name }}
           DB_USER={{ db_user }}
           DB_PASS={{ db_pass }}
-      owner: ec2-user
-      mode: '0600'
+          PORT=3001
+        owner: ec2-user
+        mode: '0600'
 
     - name: Install Backend dependencies
-      shell: |
-        cd "{{ backend_path }}"
-        npm install
+      shell: npm install
       args:
         chdir: "{{ backend_path }}"
 
-    - name: Start Backend (Node.js)
+    - name: Start Backend service
       shell: |
-        cd "{{ backend_path }}"
-        nohup npm run start > backend.log 2>&1 &
+        nohup node index.js > backend.log 2>&1 &
       args:
         chdir: "{{ backend_path }}"

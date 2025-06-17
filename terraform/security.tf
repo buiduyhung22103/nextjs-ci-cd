@@ -8,6 +8,13 @@ resource "aws_security_group" "public" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    description = "SSH from my IP"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # ← thay bằng địa chỉ IP công cộng của bạn
+  }
   egress {
     from_port   = 0
     to_port     = 0
@@ -23,6 +30,13 @@ resource "aws_security_group" "private" {
   ingress {
     from_port       = 3001
     to_port         = 3001
+    protocol        = "tcp"
+    security_groups = [aws_security_group.public.id]
+  }
+  ingress {
+    description     = "SSH from bastion (frontend)"
+    from_port       = 22
+    to_port         = 22
     protocol        = "tcp"
     security_groups = [aws_security_group.public.id]
   }

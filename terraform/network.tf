@@ -46,3 +46,36 @@ resource "aws_route_table_association" "public_assoc" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
 }
+
+resource "aws_eip" "nat" {
+  vpc = true
+}
+
+# 2. NAT Gateway trong public subnet
+resource "aws_nat_gateway" "gw" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public.id
+  tags = { Name = "counter-nat" }
+}
+
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.gw.id
+  }
+
+  tags = { Name = "counter-private-rt" }
+}
+
+# 4. Associate hai private subnets với private route table
+resource "aws_route_table_association" "private_a_assoc" {
+  subnet_id      = aws_subnet.private_a.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "private_b_assoc" {
+  subnet_id      = aws_subnet.private_b.id
+  route_table_id = aws_route_table.private.id
+}
