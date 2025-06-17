@@ -18,21 +18,21 @@ data "template_file" "user_data_private" {
 }
 
 resource "aws_instance" "frontend" {
-  ami                    = var.ami_id
+  ami                    = data.aws_ami.amazon_linux2.id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
   key_name               = var.key_pair_name
-  vpc_security_group_ids = [aws_security_group.sg_public.id]
+  vpc_security_group_ids = [aws_security_group.public.id]
   user_data              = data.template_file.user_data_public.rendered
   tags                   = { Name = "counter-frontend" }
 }
 
 resource "aws_instance" "backend" {
-  ami                    = var.ami_id
+  ami                    = data.aws_ami.amazon_linux2.id
   instance_type          = var.instance_type
-  subnet_id              = aws_subnet.private.id
+  subnet_id              = aws_subnet.private_a.id
   key_name               = var.key_pair_name
-  vpc_security_group_ids = [aws_security_group.sg_private.id]
+  vpc_security_group_ids = [aws_security_group.private.id]
   user_data              = data.template_file.user_data_private.rendered
   tags                   = { Name = "counter-backend" }
 }

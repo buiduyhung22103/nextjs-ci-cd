@@ -18,9 +18,15 @@ variable "private_subnet_cidr" {
   default = "10.0.2.0/24"
 }
 
+variable "private_subnet_cidr_2" {
+  description = "CIDR cho private subnet B"
+  type        = string
+  default     = "10.0.3.0/24"
+}
+
 variable "key_pair_name" {
   type    = string
-  default = "your-keypair"
+  default = "perm"
 }
 
 variable "instance_type" {
